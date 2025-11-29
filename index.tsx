@@ -1,7 +1,6 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import DynamicApp from './DynamicApp'; // 汎用OCRシステムを使用
-// import App from './App'; // 旧版（固定スキーマ）も利用可能
+import DynamicApp from './DynamicApp';
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
