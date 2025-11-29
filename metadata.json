@@ -1,5 +1,0 @@
-{
-  "name": "Hokkaido Sanki FAX OCR",
-  "description": "A specialized AI OCR tool for digitizing Hokkaido Sanki FAX order sheets, performing automatic data cleaning, and verifying inventory totals using Gemini 3.0.",
-  "requestFramePermissions": []
-}
