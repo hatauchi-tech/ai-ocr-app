@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>汎用 AI OCR システム - Gemini Powered</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Noto+Sans+JP:wght@300;400;500;700&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Google Sans', 'Noto Sans JP', sans-serif; }
+    .scrollbar-hide::-webkit-scrollbar { display: none; }
+    .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "react": "https://esm.sh/react@19.2.0",
+      "react-dom": "https://esm.sh/react-dom@19.2.0",
+      "react-dom/client": "https://esm.sh/react-dom@19.2.0/client",
+      "react/jsx-runtime": "https://esm.sh/react@19.2.0/jsx-runtime",
+      "lucide-react": "https://esm.sh/lucide-react@0.554.0"
+    }
+  }
+  </script>
+</head>
+<body class="bg-[#F8F9FA] text-[#202124] antialiased">
+  <div id="root"></div>
+
+  <script type="module">
+    import React, { useState, useCallback, useEffect, useRef } from 'react';
+    import { createRoot } from 'react-dom/client';
+    import * as LucideIcons from 'lucide-react';
+
+    const { ScanLine, Box, FileSpreadsheet, Sparkles, Trash2, Download, Upload, CloudUpload,
+            Loader2, CheckCircle2, XCircle, Clock, List, RefreshCw, Eye, Check, Square,
+            ArrowLeft, ZoomIn, ZoomOut, Maximize, AlertCircle, X } = LucideIcons;
+
+    // ==================== Types ====================
+    // TypeScriptの型定義をJSDocで代替
+
+    // ==================== GAS Service Wrapper ====================
+    class GASService {
+      static processFile(fileData, fileName, jobId) {
+        return new Promise((resolve, reject) => {
+          google.script.run
+            .withSuccessHandler(resolve)
+            .withFailureHandler(reject)
+            .processFile(fileData, fileName, jobId);
+        });
+      }
+
+      static loadAllJobs() {
+        return new Promise((resolve, reject) => {
+          google.script.run
+            .withSuccessHandler(resolve)
+            .withFailureHandler(reject)
+            .loadAllJobs();
+        });
+      }
+
+      static loadAllItems() {
+        return new Promise((resolve, reject) => {
+          google.script.run
+            .withSuccessHandler(resolve)
+            .withFailureHandler(reject)
+            .loadAllItems();
+        });
+      }
+
+      static updateItem(itemId, updates) {
+        return new Promise((resolve, reject) => {
+          google.script.run
+            .withSuccessHandler(resolve)
+            .withFailureHandler(reject)
+            .updateItem(itemId, updates);
+        });
+      }
+
+      static deleteJob(jobId) {
+        return new Promise((resolve, reject) => {
+          google.script.run
+            .withSuccessHandler(resolve)
+            .withFailureHandler(reject)
+            .deleteJob(jobId);
+        });
+      }
+
+      static clearAllData() {
+        return new Promise((resolve, reject) => {
+          google.script.run
+            .withSuccessHandler(resolve)
+            .withFailureHandler(reject)
+            .clearAllData();
+        });
+      }
+    }
+
+    // ==================== Utility Functions ====================
+    const fileToBase64 = (file) => {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = (error) => reject(error);
+      });
+    };
+
+    const generateId = () => Math.random().toString(36).substr(2, 9);
+
+    // ==================== CSV Export ====================
+    const exportToCSV = (items, filenamePrefix = 'hokkaido_sanki_ocr') => {
+      if (!items || items.length === 0) return;
+
+      const headers = [
+        "ページ", "No", "商品名", "JANコード", "メーカー品番",
+        "サイズ", "カラー", "記載合計", "店番号", "数量", "算出合計", "確認"
+      ];
+
+      const csvRows = [headers.join(",")];
+
+      items.forEach(item => {
+        const escape = (str) => \`"\${(str || '').replace(/"/g, '""')}"\`;
+
+        const baseRow = [
+          item.pageNumber || '',
+          item.no,
+          escape(item.productName),
+          escape(item.janCode),
+          escape(item.vendorProductCode),
+          escape(item.size),
+          escape(item.color),
+          item.reportedTotal
+        ];
+
+        if (item.distributions && item.distributions.length > 0) {
+          item.distributions.forEach(dist => {
+            const row = [
+              ...baseRow,
+              \`"\${dist.shopCode}"\`,
+              dist.quantity,
+              item.calculatedTotal,
+              item.isCorrect ? "OK" : "確認要"
+            ];
+            csvRows.push(row.join(","));
+          });
+        } else {
+          const row = [...baseRow, "", "", item.calculatedTotal, item.isCorrect ? "OK" : "確認要"];
+          csvRows.push(row.join(","));
+        }
+      });
+
+      const csvContent = csvRows.join("\\n");
+      const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csvContent], { type: "text/csv;charset=utf-8;" });
+
+      const link = document.createElement("a");
+      const url = URL.createObjectURL(blob);
+      const timestamp = new Date().getTime();
+
+      link.href = url;
+      link.download = \`\${filenamePrefix}_\${timestamp}.csv\`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    };
+
+    // ==================== Components ====================
+
+    // Dropzone Component
+    const Dropzone = ({ onFileSelect }) => {
+      const [isDragging, setIsDragging] = React.useState(false);
+      const fileInputRef = React.useRef(null);
+
+      const handleDragOver = (e) => {
+        e.preventDefault();
+        setIsDragging(true);
+      };
+
+      const handleDragLeave = (e) => {
+        e.preventDefault();
+        setIsDragging(false);
+      };
+
+      const handleDrop = (e) => {
+        e.preventDefault();
+        setIsDragging(false);
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+          const fileList = Array.from(e.dataTransfer.files);
+          const validFiles = fileList.filter(file =>
+            file.type === 'application/pdf' || file.type.startsWith('image/')
+          );
+          if (validFiles.length > 0) {
+            onFileSelect(validFiles);
+          }
+        }
+      };
+
+      const handleFileInput = (e) => {
+        if (e.target.files && e.target.files.length > 0) {
+          const fileList = Array.from(e.target.files);
+          onFileSelect(fileList);
+          if (fileInputRef.current) fileInputRef.current.value = '';
+        }
+      };
+
+      return React.createElement('div', {
+        className: \`relative group cursor-pointer w-full h-48 rounded-3xl border-2 border-dashed transition-all duration-300 ease-in-out flex flex-col items-center justify-center text-center p-6 overflow-hidden \${isDragging ? 'border-[#4285F4] bg-blue-50' : 'border-slate-300 bg-white hover:border-[#4285F4] hover:bg-blue-50/30 shadow-sm hover:shadow-md'}\`,
+        onDragOver: handleDragOver,
+        onDragLeave: handleDragLeave,
+        onDrop: handleDrop,
+        onClick: () => fileInputRef.current?.click()
+      },
+        React.createElement('input', {
+          type: 'file',
+          ref: fileInputRef,
+          className: 'hidden',
+          multiple: true,
+          accept: 'image/png, image/jpeg, image/webp, application/pdf',
+          onChange: handleFileInput
+        }),
+        React.createElement('div', { className: 'flex flex-col items-center space-y-4' },
+          React.createElement('div', { className: \`p-4 rounded-full bg-blue-50 text-[#4285F4] transition-transform duration-300 \${isDragging ? 'scale-110' : ''}\` },
+            React.createElement(CloudUpload, { size: 32 })
+          ),
+          React.createElement('div', null,
+            React.createElement('p', { className: 'text-lg font-medium text-[#202124] flex items-center justify-center gap-2' }, 'FAX注文書をここにドロップ'),
+            React.createElement('p', { className: 'text-sm mt-1 text-[#5F6368]' },
+              'または ',
+              React.createElement('span', { className: 'text-[#4285F4] font-medium hover:underline' }, 'ファイルを選択')
+            ),
+            React.createElement('p', { className: 'text-xs mt-2 text-[#5F6368] bg-slate-100 inline-block px-3 py-1 rounded-full' }, 'PDF, JPG, PNG 対応')
+          )
+        )
+      );
+    };
+
+    // JobStatus Component (簡易版)
+    const JobStatus = ({ jobs, onDeleteJob }) => {
+      if (jobs.length === 0) return null;
+
+      return React.createElement('div', { className: 'bg-white border border-slate-200 rounded-3xl shadow-sm overflow-hidden' },
+        React.createElement('div', { className: 'px-5 py-4 border-b border-slate-100 bg-[#F8F9FA] flex justify-between items-center' },
+          React.createElement('h3', { className: 'text-sm font-bold text-[#202124]' }, '処理状況'),
+          React.createElement('span', { className: 'text-xs text-[#5F6368] bg-slate-200 px-2 py-0.5 rounded-full' }, \`\${jobs.length} ファイル\`)
+        ),
+        React.createElement('div', { className: 'divide-y divide-slate-100 max-h-60 overflow-y-auto' },
+          jobs.map(job => React.createElement('div', { key: job.id, className: 'px-5 py-3 flex items-center justify-between gap-4' },
+            React.createElement('div', { className: 'flex items-center gap-3 overflow-hidden flex-1' },
+              React.createElement('div', { className: \`p-2 rounded-full \${job.status === 'completed' ? 'bg-green-100 text-[#34A853]' : job.status === 'error' ? 'bg-red-100 text-[#EA4335]' : 'bg-blue-100 text-[#4285F4]'}\` },
+                job.status === 'processing' ? React.createElement(Loader2, { size: 18, className: 'animate-spin' }) :
+                job.status === 'completed' ? React.createElement(CheckCircle2, { size: 18 }) :
+                job.status === 'error' ? React.createElement(XCircle, { size: 18 }) :
+                React.createElement(Clock, { size: 18 })
+              ),
+              React.createElement('div', { className: 'min-w-0 flex-1' },
+                React.createElement('p', { className: 'text-sm font-medium text-[#202124] truncate' }, job.fileName),
+                React.createElement('p', { className: 'text-xs text-[#5F6368] truncate' }, job.progressMessage)
+              )
+            ),
+            React.createElement('button', {
+              onClick: () => onDeleteJob(job.id),
+              className: 'p-1.5 text-slate-400 hover:text-red-600 rounded-full'
+            }, React.createElement(Trash2, { size: 14 }))
+          ))
+        )
+      );
+    };
+
+    // ResultTable Component (簡易版)
+    const ResultTable = ({ items, onItemUpdate }) => {
+      if (!items || items.length === 0) return null;
+
+      const totalRows = items.length;
+      const okCount = items.filter(i => i.isCorrect).length;
+      const errorCount = totalRows - okCount;
+
+      return React.createElement('div', { className: 'space-y-6' },
+        React.createElement('div', { className: 'grid grid-cols-1 md:grid-cols-3 gap-4' },
+          React.createElement('div', { className: 'bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex items-center space-x-4' },
+            React.createElement('div', { className: 'p-3 bg-blue-50 rounded-full text-[#4285F4]' }, React.createElement(AlertCircle, { size: 24 })),
+            React.createElement('div', null,
+              React.createElement('p', { className: 'text-xs text-[#5F6368] font-medium' }, '読込行数'),
+              React.createElement('p', { className: 'text-2xl font-bold text-[#202124]' }, totalRows)
+            )
+          ),
+          React.createElement('div', { className: 'bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex items-center space-x-4' },
+            React.createElement('div', { className: 'p-3 bg-green-50 rounded-full text-[#34A853]' }, React.createElement(CheckCircle2, { size: 24 })),
+            React.createElement('div', null,
+              React.createElement('p', { className: 'text-xs text-[#5F6368] font-medium' }, '数量一致'),
+              React.createElement('p', { className: 'text-2xl font-bold text-[#34A853]' }, okCount)
+            )
+          ),
+          React.createElement('div', { className: 'bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex items-center space-x-4' },
+            React.createElement('div', { className: 'p-3 bg-red-50 rounded-full text-[#EA4335]' }, React.createElement(XCircle, { size: 24 })),
+            React.createElement('div', null,
+              React.createElement('p', { className: 'text-xs text-[#5F6368] font-medium' }, '不一致'),
+              React.createElement('p', { className: 'text-2xl font-bold text-[#EA4335]' }, errorCount)
+            )
+          )
+        ),
+        React.createElement('div', { className: 'bg-white border border-slate-200 rounded-2xl shadow-sm overflow-x-auto' },
+          React.createElement('table', { className: 'w-full text-left text-sm' },
+            React.createElement('thead', { className: 'bg-[#F8F9FA] border-b border-slate-200 text-xs font-bold text-[#5F6368]' },
+              React.createElement('tr', null,
+                React.createElement('th', { className: 'px-4 py-4' }, 'Page'),
+                React.createElement('th', { className: 'px-4 py-4' }, 'No'),
+                React.createElement('th', { className: 'px-4 py-4 min-w-[200px]' }, '商品名'),
+                React.createElement('th', { className: 'px-4 py-4' }, 'サイズ'),
+                React.createElement('th', { className: 'px-4 py-4' }, 'カラー'),
+                React.createElement('th', { className: 'px-4 py-4 text-center' }, '記載合計'),
+                React.createElement('th', { className: 'px-4 py-4 text-center' }, '算出合計'),
+                React.createElement('th', { className: 'px-4 py-4 text-center' }, '承認')
+              )
+            ),
+            React.createElement('tbody', { className: 'divide-y divide-slate-100' },
+              items.map(item => {
+                const isStatusOk = item.isCorrect;
+                const needsCheck = !isStatusOk && !item.isVerified;
+
+                return React.createElement('tr', {
+                  key: item.id,
+                  className: \`transition-colors hover:bg-[#F1F3F4] \${needsCheck ? 'bg-red-50/30' : ''}\`
+                },
+                  React.createElement('td', { className: 'px-4 py-3 text-center font-mono text-xs' }, item.pageNumber || '-'),
+                  React.createElement('td', { className: 'px-4 py-3 text-center font-mono text-xs' }, item.no),
+                  React.createElement('td', { className: 'px-4 py-3' }, item.productName),
+                  React.createElement('td', { className: 'px-4 py-3' }, item.size),
+                  React.createElement('td', { className: 'px-4 py-3' }, item.color),
+                  React.createElement('td', { className: 'px-4 py-3 text-center font-bold' }, item.reportedTotal),
+                  React.createElement('td', { className: \`px-4 py-3 text-center font-bold \${isStatusOk ? 'text-[#202124]' : 'text-[#EA4335]'}\` }, item.calculatedTotal),
+                  React.createElement('td', { className: 'px-4 py-3 text-center' },
+                    isStatusOk ?
+                      React.createElement('span', { className: 'inline-flex items-center gap-1 px-2 py-1 rounded-full bg-green-100 text-[#34A853] text-xs font-bold' },
+                        React.createElement(Check, { size: 12 }), 'OK'
+                      ) :
+                      React.createElement('button', {
+                        onClick: () => onItemUpdate(item.id, { isVerified: !item.isVerified }),
+                        className: \`flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold mx-auto \${item.isVerified ? 'bg-[#FEF7E0] text-[#B06000]' : 'bg-[#EA4335] text-white'}\`
+                      },
+                        item.isVerified ? React.createElement(React.Fragment, null, React.createElement(CheckCircle2, { size: 14 }), '確認済') :
+                          React.createElement(React.Fragment, null, React.createElement(Square, { size: 14 }), '承認')
+                      )
+                  )
+                );
+              })
+            )
+          )
+        )
+      );
+    };
+
+    // Main App Component
+    const App = () => {
+      const [jobs, setJobs] = React.useState([]);
+      const [resultItems, setResultItems] = React.useState([]);
+      const [isLoading, setIsLoading] = React.useState(true);
+
+      // 初期データ読み込み
+      React.useEffect(() => {
+        const loadData = async () => {
+          try {
+            const [loadedJobs, loadedItems] = await Promise.all([
+              GASService.loadAllJobs(),
+              GASService.loadAllItems()
+            ]);
+            setJobs(loadedJobs || []);
+            setResultItems(loadedItems || []);
+          } catch (error) {
+            console.error('Failed to load data:', error);
+          } finally {
+            setIsLoading(false);
+          }
+        };
+        loadData();
+      }, []);
+
+      const addFilesToQueue = React.useCallback(async (files) => {
+        for (const file of files) {
+          const jobId = generateId();
+          const newJob = {
+            id: jobId,
+            fileName: file.name,
+            status: 'queued',
+            totalPages: 0,
+            processedPages: 0,
+            progressMessage: '待機中...'
+          };
+
+          setJobs(prev => [...prev, newJob]);
+
+          try {
+            const fileData = await fileToBase64(file);
+            const result = await GASService.processFile(fileData, file.name, jobId);
+
+            if (result.success) {
+              setResultItems(prev => [...prev, ...result.items]);
+              setJobs(prev => prev.map(j => j.id === jobId ? { ...j, status: 'completed', progressMessage: '完了' } : j));
+            } else {
+              setJobs(prev => prev.map(j => j.id === jobId ? { ...j, status: 'error', progressMessage: result.error } : j));
+            }
+          } catch (error) {
+            console.error('Processing error:', error);
+            setJobs(prev => prev.map(j => j.id === jobId ? { ...j, status: 'error', progressMessage: error.toString() } : j));
+          }
+        }
+      }, []);
+
+      const handleItemUpdate = React.useCallback(async (id, updates) => {
+        try {
+          await GASService.updateItem(id, updates);
+          setResultItems(prev => prev.map(item => item.id === id ? { ...item, ...updates } : item));
+        } catch (error) {
+          console.error('Update error:', error);
+        }
+      }, []);
+
+      const handleDeleteJob = React.useCallback(async (jobId) => {
+        if (!confirm('このジョブを削除しますか?')) return;
+        try {
+          await GASService.deleteJob(jobId);
+          setJobs(prev => prev.filter(j => j.id !== jobId));
+          setResultItems(prev => prev.filter(i => i.jobId !== jobId));
+        } catch (error) {
+          console.error('Delete error:', error);
+        }
+      }, []);
+
+      const clearResults = React.useCallback(async () => {
+        if (!confirm('すべてのデータを削除しますか?')) return;
+        try {
+          await GASService.clearAllData();
+          setResultItems([]);
+          setJobs([]);
+        } catch (error) {
+          console.error('Clear error:', error);
+        }
+      }, []);
+
+      const handleExportCSV = React.useCallback(() => {
+        exportToCSV(resultItems, 'hokkaido_sanki_ocr');
+      }, [resultItems]);
+
+      if (isLoading) {
+        return React.createElement('div', { className: 'min-h-screen flex items-center justify-center bg-[#F8F9FA]' },
+          React.createElement('div', { className: 'text-center' },
+            React.createElement('div', { className: 'animate-spin rounded-full h-12 w-12 border-b-2 border-[#4285F4] mx-auto mb-4' }),
+            React.createElement('p', { className: 'text-[#5F6368]' }, 'データを読み込み中...')
+          )
+        );
+      }
+
+      return React.createElement('div', { className: 'min-h-screen bg-[#F8F9FA] pb-20 font-sans' },
+        React.createElement('header', { className: 'bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm' },
+          React.createElement('div', { className: 'max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between' },
+            React.createElement('div', { className: 'flex items-center space-x-3' },
+              React.createElement('div', { className: 'p-2 bg-[#4285F4] rounded-xl text-white shadow-md' }, React.createElement(ScanLine, { size: 24 })),
+              React.createElement('h1', { className: 'text-xl font-bold text-[#202124]' },
+                '汎用 AI OCR ',
+                React.createElement('span', { className: 'px-2 py-0.5 rounded-full bg-blue-50 text-[#1967D2] text-[10px] font-bold' }, 'Gemini 3.0')
+              )
+            )
+          )
+        ),
+        React.createElement('main', { className: 'max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8' },
+          React.createElement('div', { className: 'text-center max-w-3xl mx-auto py-4' },
+            React.createElement('h2', { className: 'text-3xl font-bold text-[#202124] mb-3' }, 'FAX注文書のデータ化を、瞬時に。'),
+            React.createElement('p', { className: 'text-[#5F6368] text-lg' }, '注文書（PDF/画像）をアップロードしてください。Gemini 3.0 がデータを自動で構造化します。')
+          ),
+          React.createElement('div', { className: 'grid grid-cols-1 lg:grid-cols-3 gap-6' },
+            React.createElement('div', { className: 'lg:col-span-2' }, React.createElement(Dropzone, { onFileSelect: addFilesToQueue })),
+            React.createElement('div', { className: 'lg:col-span-1' }, React.createElement(JobStatus, { jobs, onDeleteJob: handleDeleteJob }))
+          ),
+          resultItems.length > 0 && React.createElement('div', { className: 'space-y-4' },
+            React.createElement('div', { className: 'flex items-center justify-between border-b border-slate-200 pb-4' },
+              React.createElement('h3', { className: 'text-xl font-bold text-[#202124] flex items-center gap-2' },
+                React.createElement(FileSpreadsheet, { className: 'text-[#34A853]' }), '注文データ一覧'
+              ),
+              React.createElement('div', { className: 'flex gap-3' },
+                React.createElement('button', { onClick: clearResults, className: 'flex items-center gap-2 text-sm font-medium text-[#EA4335] hover:text-[#D93025] px-4 py-2 rounded-full hover:bg-red-50' },
+                  React.createElement(Trash2, { size: 18 }), '全て削除'
+                ),
+                React.createElement('button', { onClick: handleExportCSV, className: 'flex items-center gap-2 text-sm font-medium text-[#174EA6] bg-white border border-[#D2E3FC] hover:bg-[#F1F3F4] px-5 py-2.5 rounded-full' },
+                  React.createElement(Download, { size: 18 }), 'CSV出力'
+                )
+              )
+            ),
+            React.createElement(ResultTable, { items: resultItems, onItemUpdate: handleItemUpdate })
+          )
+        )
+      );
+    };
+
+    // Mount App
+    const root = createRoot(document.getElementById('root'));
+    root.render(React.createElement(App));
+  </script>
+</body>
+</html>

@@ -1,5 +1,0 @@
-{
-  "name": "Generic AI OCR System",
-  "description": "A customizable AI OCR system for digitizing any type of document with user-defined templates, powered by Gemini 3.0.",
-  "requestFramePermissions": []
-}
