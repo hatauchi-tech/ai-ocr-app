@@ -1,7 +1,7 @@
 {
-  "name": "hokkaido-sanki-fax-ocr",
+  "name": "generic-ai-ocr",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
