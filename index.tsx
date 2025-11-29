@@ -1,6 +1,7 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import App from './App';
+import DynamicApp from './DynamicApp'; // 汎用OCRシステムを使用
+// import App from './App'; // 旧版（固定スキーマ）も利用可能
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
@@ -10,6 +11,6 @@ if (!rootElement) {
 const root = createRoot(rootElement);
 root.render(
   <React.StrictMode>
-    <App />
+    <DynamicApp />
   </React.StrictMode>
 );
